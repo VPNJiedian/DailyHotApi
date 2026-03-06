@@ -33,53 +33,76 @@ export const handleRoute = async (c: ListContext, noCache: boolean) => {
 
 const getList = async (options: Options, noCache: boolean): Promise<RouterResType> => {
   const { type } = options;
-  const url = `https://top.baidu.com/board?tab=${type}`;
+  // 使用百度官方的API接口，这个更稳定
+  const url = `https://top.baidu.com/api/board?platform=pc&tab=${type}`;
+  
   const result = await get({
     url,
     noCache,
     headers: {
-      "User-Agent":
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+      "Referer": "https://top.baidu.com/",
+      "Accept": "application/json, text/plain, */*",
     },
   });
-  // 正则查找
-  const pattern = /<!--s-data:(.*?)-->/s;
-  const matchResult = result.data.match(pattern);
-  if (!matchResult) {
+
+  try {
+    // 直接解析API返回的JSON数据
+    const apiData = result.data;
+    
+    // 根据API返回的实际结构调整数据提取路径
+    // 常见的返回格式: {code:0, data: {cards: [...]}} 或 {success:true, list: [...]}
+    let hotList = [];
+    
+    if (apiData.data?.cards) {
+      // 格式1: data.cards 包含数据
+      const cards = apiData.data.cards;
+      for (const card of cards) {
+        if (card.content && Array.isArray(card.content)) {
+          hotList = [...hotList, ...card.content];
+        }
+      }
+    } else if (apiData.data?.list) {
+      // 格式2: data.list 直接是数组
+      hotList = apiData.data.list;
+    } else if (Array.isArray(apiData.list)) {
+      // 格式3: list 直接是数组
+      hotList = apiData.list;
+    } else if (apiData.data && Array.isArray(apiData.data)) {
+      // 格式4: data 直接是数组
+      hotList = apiData.data;
+    }
+
+    return {
+      ...result,
+      data: hotList.map((item: any, index: number) => {
+        // 处理不同字段名的可能性
+        const title = item.word || item.title || item.query || item.name || "";
+        const hotScore = item.hotScore || item.hot || item.hotCount || item.score || 0;
+        const url = item.url || item.link || item.href || `https://www.baidu.com/s?wd=${encodeURIComponent(title)}`;
+        const desc = item.desc || item.description || item.summary || "";
+        const img = item.img || item.pic || item.image || item.imgInfo?.src || "";
+        const author = item.author || item.show || item.source || "";
+
+        return {
+          id: item.index || item.id || index + 1,
+          title,
+          desc,
+          cover: img,
+          author: Array.isArray(author) ? author.join(",") : author,
+          timestamp: item.pubTime || item.timestamp || 0,
+          hot: parseInt(hotScore.toString(), 10) || 0,
+          url: url.startsWith("http") ? url : `https://www.baidu.com${url}`,
+          mobileUrl: item.mobileUrl || item.murl || url || "",
+        };
+      }),
+    };
+  } catch (error) {
+    console.error("百度API解析失败:", error);
+    // 如果API失败，返回空数据而不是崩溃
     return {
       ...result,
       data: [],
     };
   }
-  let jsonObject: RouterType["baidu"][] = [];
-  try {
-    const sData = JSON.parse(matchResult[1]);
-    const cardContent = sData.data?.cards?.[0]?.content ?? sData.cards?.[0]?.content;
-    if (Array.isArray(cardContent)) {
-      if (cardContent.length > 0 && Array.isArray(cardContent[0]?.content)) {
-        jsonObject = cardContent[0].content;
-      } else {
-        jsonObject = cardContent;
-      }
-    }
-  } catch {
-    jsonObject = [];
-  }
-  return {
-    ...result,
-    data: jsonObject.map((v: RouterType["baidu"], index: number) => {
-      const title = v.word ?? v.title ?? "";
-      return {
-        id: v.index ?? index + 1,
-        title,
-        desc: v.desc ?? "",
-        cover: v.img ?? v.imgInfo?.src ?? "",
-        author: v.show?.length ? v.show : "",
-        timestamp: 0,
-        hot: parseInt((v.hotScore ?? v.hotTag ?? "0").toString(), 10) || 0,
-        url: `https://www.baidu.com/s?wd=${encodeURIComponent(v.query ?? title)}`,
-        mobileUrl: v.rawUrl ?? v.url ?? "",
-      };
-    }),
-  };
 };
